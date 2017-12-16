@@ -1,14 +1,24 @@
+""" DB Util 171215_1150 """
 import logging
 import copy
 
-import tittles as t
-import db_core as db
+import mod
+_t = mod.Mod("tittles")      # pylint: disable-msg=C0103
+_dbc = mod.Mod("db_core")    # pylint: disable-msg=C0103
+
+def mods_rld(recursive=False):
+    """Reload modules"""
+    _t.reload()
+    _dbc.reload()
+    if recursive:
+        _dbc.m.mods_rld(recursive)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format="%(levelname)s: %(asctime)s %(module)s:%(lineno)d(%(funcName)s) %(message)s", level=logging.DEBUG)
-
-_log = logging.getLogger(__name__)
+    logging.basicConfig(
+        format="%(levelname)s: %(module)s:%(lineno)d(%(funcName)s) %(message)s",
+        level=logging.DEBUG)
+_log = logging.getLogger(__name__)  # pylint: disable-msg=C0103
 
 
 DB_ERR_TABLE_DOES_NOT_EXIST = "42P01"
@@ -45,6 +55,12 @@ def db_classes(conn, where_list=None, **kwargs):
     return classes_
 
 
+def db_col_compare(col1, col2, **kwargs):
+    if col1["col_name"] == col2["col_name"] and col1["col_type"] == col2["col_type"] and col1["not_null"] == col2["not_null"]:
+        return 0
+    return 1
+
+
 def db_constraints(conn, where_list=None, **kwargs):
     stmt_ = [(
         # TODO Statement - to collect all db_constraints with their attributes
@@ -79,8 +95,8 @@ def db_constraints(conn, where_list=None, **kwargs):
 def db_triggers(conn, where_list=None, **kwargs):
     stmt_ = [(
         "SELECT t.tgname, n.nspname, c.relname"
-        " FROM pg_authid a, pg_catalog.pg_namespace n, pg_catalog.pg_class c, pg_catalog.pg_trigger t"
-        " WHERE c.oid = t.tgrelid AND n.oid = c.relnamespace AND a.oid = c.relowner"
+        " FROM pg_catalog.pg_namespace n, pg_catalog.pg_class c, pg_catalog.pg_trigger t"
+        " WHERE c.oid = t.tgrelid AND n.oid = c.relnamespace"
     ), ]
     if where_list: stmt_.append("AND %s" % " AND ".join(where_list))
     trigs_ = []
@@ -93,8 +109,8 @@ def db_functions(conn, where_list=None, **kwargs):
     # TODO - add function owner to the query
     stmt_ = [(
         "SELECT p.proname, p.proisagg, pg_catalog.pg_get_function_identity_arguments(p.oid), n.nspname"
-        " FROM pg_catalog.pg_namespace n, pg_catalog.pg_authid a, pg_catalog.pg_proc p"
-        " WHERE a.oid = p.proowner AND n.oid = p.pronamespace"
+        " FROM pg_catalog.pg_namespace n, pg_catalog.pg_proc p"
+        " WHERE n.oid = p.pronamespace"
     ), ]
     if where_list: stmt_.append("AND %s" % " AND ".join(where_list))
     funcs_ = []
@@ -128,7 +144,7 @@ def db_sequences(conn, where_list=None, **kwargs):
 def db_tables(conn, where_list=None, **kwargs):
     where_ = ["c.relkind IN (%s)" % __DB_CLASS_KIND_TABLE, ]
     if where_list: where_ = where_ + where_list
-    return t.dicarray_dup_key(db_classes(conn, where_, **kwargs), "class_name", "table_name")
+    return _t.m.dicarray_dup_key(db_classes(conn, where_, **kwargs), "class_name", "table_name")
 
 
 def db_owned_tables(conn, where_list=None, **kwargs):
@@ -167,15 +183,13 @@ def db_table_check_constraints(conn, table_name, **kwargs):
 
 
 def db_table_select(conn, table_name, columns, where=None, order_by=None, args=None, **kwargs):
-    # _log.debug("table_name=%s, columns=%s, where=%s, order_by=%s, args=%s, kwargs=%s" % (table_name, columns, where, order_by, args, kwargs))
-
     return conn.select_all((
-        "SELECT %s FROM %s WHERE %s ORDER BY %s"
+        "SELECT %s FROM %s%s%s"
     ) % (
         ", ".join(columns),
         table_name,
-        " AND ".join(where),
-        ", ".join(order_by),
+        where and " WHERE %s" % _t.m.lovts(where, " AND ") or "",
+        order_by and " ORDER BY %s" % _t.m.lovts(order_by, ", ") or "",
     ), args, **kwargs)
 
 
@@ -187,7 +201,7 @@ def db_table_insert_rows(conn, table_name, columns, records, **kwargs):
     rowcount_ = 0
     for r_ in records:
         rc_ = conn.execute(stmt_, r_[:len(columns)], **kwargs)
-        if rc_ < 1: raise t.DbExecuteError("Can't insert into '%s' (rowcount=%s) STMT: %s; ARGS: %s" % (table_name, rc_, stmt_, r_))
+        if rc_ < 1: raise _t.m.DbExecuteError("Can't insert into '%s' (rowcount=%s) STMT: %s; ARGS: %s" % (table_name, rc_, stmt_, r_))
         rowcount_ += rc_
     return rowcount_
 
@@ -196,9 +210,10 @@ def db_table_update_rows(conn, table_name, columns, records, ident_columns, **kw
     idents_ = {}
     where_ = []
     for c_ in ident_columns: idents_[c_] = {"i": columns.index(c_)}
-    for c_ in idents_.keys():
+    for c_ in idents_:
+    # for c_ in idents_.keys():
         where_.append(c_ + " = %s")
-        idents_[c_]["v"] = t.tavbi(records, idents_[c_]["i"])
+        idents_[c_]["v"] = _t.m.tavbi(records, idents_[c_]["i"])
     set_ = []
     for c_ in columns: set_.append(c_ + " = %s")
     stmt_ = "UPDATE %s SET %s WHERE %s" % (table_name, ", ".join(set_), " AND ".join(where_))
@@ -211,9 +226,10 @@ def db_table_update_rows(conn, table_name, columns, records, ident_columns, **kw
             vals_ += (r_[c_i_], )
             c_i_ += 1
         args_ = ()
-        for c_ in idents_.keys(): args_ += (idents_[c_]["v"][r_i_], )
+        for c_ in idents_: args_ += (idents_[c_]["v"][r_i_], )
+        # for c_ in idents_.keys(): args_ += (idents_[c_]["v"][r_i_], )
         rc_ = conn.execute(stmt_, vals_ + args_, **kwargs)
-        if rc_ < 1: raise t.DbExecuteError("Can't update '%s' (rowcount=%s) STMT: %s; VALS: %s; ARGS: %s" % (table_name, rc_, stmt_, vals_, args_))
+        if rc_ < 1: raise _t.m.DbExecuteError("Can't update '%s' (rowcount=%s) STMT: %s; VALS: %s; ARGS: %s" % (table_name, rc_, stmt_, vals_, args_))
         rowcount_ += rc_
         r_i_ += 1
     return rowcount_
@@ -223,18 +239,20 @@ def db_table_delete_rows(conn, table_name, columns, records, ident_columns, **kw
     idents_ = {}
     where_ = []
     for c_ in ident_columns: idents_[c_] = {"i": columns.index(c_)}
-    for c_ in idents_.keys():
+    for c_ in idents_:
+    # for c_ in idents_.keys():
         where_.append(c_ + " = %s")
-        idents_[c_]["v"] = t.tavbi(records, idents_[c_]["i"])
+        idents_[c_]["v"] = _t.m.tavbi(records, idents_[c_]["i"])
     stmt_ = "DELETE FROM %s WHERE %s" % (table_name, " AND ".join(where_))
     i_ = 0
     rowcount_ = 0
     for r_ in records:
         a_ = ()
-        for c_ in idents_.keys():
-            a_ += (idents_[c_]["v"][i_], )
+        for c_ in idents_: a_ += (idents_[c_]["v"][i_], )
+        # for c_ in idents_.keys(): a_ += (idents_[c_]["v"][i_], )
         rc_ = conn.execute(stmt_, a_, **kwargs)
-        if rc_ < 1: raise t.DbExecuteError("Can't delete from '%s' (rowcount=%s) STMT: %s; ARGS: %s" % (table_name, rc_, stmt_, a_))
+        if rc_ < 1 and not kwargs.get("ignore_not_exist"):
+            raise _t.m.DbExecuteError("Can't delete from '%s'; rowcount=%s STMT: %s; ARGS: %s" % (table_name, rc_, stmt_, a_))
         rowcount_ += rc_
         i_ += 1
     return rowcount_
@@ -242,22 +260,19 @@ def db_table_delete_rows(conn, table_name, columns, records, ident_columns, **kw
 
 def db_table_ddl(conn, table_name, table_cols, table_seqs, table_cons, **kwargs):
 
-    # Make local copy
-    table_cols_ = table_cols
-
     # Sequences
     if table_seqs:
         for s_ in table_seqs:
-            col_ = t.dic_find_in_list(table_cols_, "col_name", s_["col_name"])
-            if col_:
-                col_["is_seq"] = True
-                col_["col_type"] = "serial"
+            c_ = _t.m.dafkvfe(table_cols, "col_name", s_["col_name"])
+            if c_:
+                c_["is_seq"] = True
+                c_["col_type"] = "serial"
             else:
-                raise t.DbIntgrError("Sequence '%s' is not related to any table (%s) column" % (s_["seq_name"], table_name))
+                raise _t.m.DbIntgrError("Sequence '%s' not related to any table '%s' column" % (s_["seq_name"], table_name))
 
     # Columns
     cols_ = []
-    for c_ in table_cols_:
+    for c_ in table_cols:
         cols_.append("%s %s%s" % (c_["col_name"], c_["col_type"], c_.get("not_null") and " NOT NULL" or ""))
 
     # Constraints
@@ -280,19 +295,15 @@ def db_table_create(conn, table_name, **kwargs):
     return db_table_ddl(conn, table_name, db_table_columns(conn, table_name), db_table_sequences(conn, table_name), db_table_check_constraints(conn, table_name))
 
 
-def db_table_drop(conn, table, **kwargs):
-    table_name_ = t.DicFld(table, "table_name_field", "class_name", **kwargs)
-    schema_name_ = t.DicFld(table, "schema_name_field", "schema_name", **kwargs)
-    if not table_name_.v():
-        raise t.ConfigError("Table name undefined (no field '%s' in table dict %s)" % (table_name_.n(), table))
-    stmt_ = "DROP TABLE %s" % (schema_name_.v() and ("%s.%s" % (schema_name_.v(), table_name_.v())) or table_name_.v())
+def db_table_drop(conn, table_name, **kwargs):
+    stmt_ = "DROP TABLE %s" % (table_name, )
     if kwargs.get("apply"): conn.execute(stmt_, **kwargs)
     return [stmt_, ]
 
 
-def db_tables_drop(conn, tables, **kwargs):
+def db_tables_drop(conn, table_names, **kwargs):
     stmt_ = []
-    for t_ in tables:
+    for t_ in table_names:
         stmt_ += db_table_drop(conn, t_, **kwargs)
     return stmt_
 
@@ -307,12 +318,13 @@ def __test():
     table_name_ = "t_records"
     table_name2_ = "t_records_1"
 
-    conn_ = db.Db(DB_conf, database_equals_user=True)
-    # conn_.connect(debug="statement")
+    conn_ = _dbc.m.Db(DB_conf, database_equals_user=True)
 
     coldefs_ = db_table_columns(conn_, table_name_)
-    cols_ = t.dalv(coldefs_, "col_name")
-    recs_ = db_table_select(conn_, table_name_, cols_)
+    cols_ = _t.m.dalv(coldefs_, "col_name")
+    recs_ = db_table_select(conn_, table_name_, cols_, "amount > 3000", "id", debug="statement")
+    for r_ in recs_:
+        _log.debug("R: %s" % (r_, ))
 
     rc_ = db_table_delete_rows(conn_, table_name2_, cols_, recs_, ["cash_register_id", "entry_date"])
     _log.debug("%s records deleted" % rc_)
@@ -320,7 +332,7 @@ def __test():
     rc_ = db_table_insert_rows(conn_, table_name2_, cols_, recs_)
     _log.debug("%s records inserted" % rc_)
 
-    conn_.commit()
+    # conn_.commit()
 
 
 if __name__ == "__main__":
