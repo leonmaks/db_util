@@ -55,10 +55,39 @@ def db_classes(conn, where_list=None, **kwargs):
     return classes_
 
 
+def db_col_type_compare(col_type1, col_type2):
+
+    if col_type1 == col_type2: return True
+
+    ct1_ = col_type1.replace("timestamp(6)", "timestamp")
+    ct2_ = col_type2.replace("timestamp(6)", "timestamp")
+
+    if ct1_ == ct2_: return True
+
+    return False
+
+
 def db_col_compare(col1, col2, **kwargs):
-    if col1["col_name"] == col2["col_name"] and col1["col_type"] == col2["col_type"] and col1["not_null"] == col2["not_null"]:
-        return 0
-    return 1
+
+    mdf_ = []
+
+    # column name
+    if not col1["col_name"] == col2["col_name"]:
+        mdf_.append("col_name")
+
+    # column type
+    if not db_col_type_compare(col1["col_type"], col2["col_type"]):
+        mdf_.append("col_type")
+
+    # column not null
+    if not col1["not_null"] == col2["not_null"]:
+        mdf_.append("col_not_null")
+
+    if mdf_:
+        col1["__mdf__"] = mdf_
+        return 1
+
+    return 0
 
 
 def db_constraints(conn, where_list=None, **kwargs):
@@ -259,11 +288,13 @@ def db_table_delete_rows(conn, table_name, columns, records, ident_columns, **kw
 
 
 def db_table_ddl(conn, table_name, table_cols, table_seqs, table_cons, **kwargs):
+    """ Generate create table DDL
+    """
 
     # Sequences
     if table_seqs:
         for s_ in table_seqs:
-            c_ = _t.m.dafkvfe(table_cols, "col_name", s_["col_name"])
+            c_ = _t.m.daffkv(table_cols, "col_name", s_["col_name"])
             if c_:
                 c_["is_seq"] = True
                 c_["col_type"] = "serial"
